@@ -34,4 +34,14 @@ export class HikController {
   async openDoor() {
     return this.hikService.openDoor();
   }
+
+  @Post('upload-face')
+  async uploadFace(@Body() body: { employeeNo: string, image: string }) {
+    return this.hikService.uploadFace(body.employeeNo, body.image);
+  }
+
+  @Get('attendance')
+  async getAttendanceLogs(@Query('start') start?: string, @Query('end') end?: string) {
+    return this.hikService.getAttendanceLogs(start, end);
+  }
 }

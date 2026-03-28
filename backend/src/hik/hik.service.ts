@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import * as crypto from 'crypto';
 import axios, { AxiosResponse } from 'axios';
+const FormData = require('form-data');
 
 @Injectable()
 export class HikService {
@@ -20,7 +21,7 @@ export class HikService {
     this.baseUrl = `http://${ip}`;
   }
 
-  private async request(method: string, url: string, data?: any): Promise<any> {
+  private async request(method: string, url: string, data?: any, customHeaders?: any): Promise<any> {
     const fullUrl = `${this.baseUrl}${url}${url.includes('?') ? '&' : '?'}format=json`;
     
     try {
@@ -29,6 +30,7 @@ export class HikService {
         method,
         url: fullUrl,
         data,
+        headers: customHeaders,
         validateStatus: () => true, // Don't throw for 401
       });
 
@@ -68,9 +70,10 @@ export class HikService {
         url: fullUrl,
         data,
         headers: {
-          'Authorization': authValue,
           'Content-Type': 'application/json',
           'Accept': 'application/json',
+          ...customHeaders,
+          'Authorization': authValue,
         },
       });
 
@@ -150,7 +153,7 @@ export class HikService {
         EmployeeNoList: [{ employeeNo }],
       },
     };
-    return this.request('PUT', '/ISAPI/AccessControl/UserInfo/Record/Delete', deleteData);
+    return this.request('PUT', '/ISAPI/AccessControl/UserInfoDetail/Delete', deleteData);
   }
 
   async openDoor() {
@@ -159,5 +162,75 @@ export class HikService {
         command: 'open',
       },
     });
+  }
+
+  async uploadFace(employeeNo: string, base64Image: string) {
+    // base64Image comes as "data:image/jpeg;base64,...". Remove the prefix.
+    const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    const form = new FormData();
+    const faceDataRecord = {
+      FaceDataRecord: {
+        faceLibType: "blackFD",
+        FDID: "1",
+        FPID: employeeNo
+      }
+    };
+    form.append('FaceDataRecord', JSON.stringify(faceDataRecord), { contentType: 'application/json' });
+    form.append('FaceImage', buffer, { filename: 'face.jpg', contentType: 'image/jpeg' });
+
+    return this.request(
+      'POST',
+      '/ISAPI/Intelligent/FDLib/FaceDataRecord',
+      form,
+      form.getHeaders()
+    );
+  }
+
+  async getAttendanceLogs(startTime?: string, endTime?: string) {
+    // We use absolute bounds to completely eliminate Timezone sync issues between
+    // the Node server and the physical Hikvision Device bypassing cutoff bugs.
+    const st = startTime || "2010-01-01T00:00:00+08:00";
+    const et = endTime || "2035-12-31T23:59:59+08:00";
+
+    // STEP 1: Execute a lightweight query to determine exactly how many events exist on the hardware
+    const probeData = {
+      AcsEventCond: {
+        searchID: "1",
+        searchResultPosition: 0,
+        maxResults: 1,
+        major: 0,
+        minor: 0,
+        startTime: st,
+        endTime: et
+      }
+    };
+
+    try {
+      const probeResponse = await this.request('POST', '/ISAPI/AccessControl/AcsEvent', probeData);
+      const totalMatches = probeResponse?.AcsEvent?.totalMatches || 0;
+
+      // STEP 2: The device silently limits how much it can return at once (caps around 150).
+      // We calculate the precise offset to capture ONLY the absolute newest 40 events
+      const position = Math.max(0, totalMatches - 40);
+
+      const finalData = {
+        AcsEventCond: {
+          searchID: "2", // Different ID to avoid caching issues on the embedded device
+          searchResultPosition: position,
+          maxResults: 40,
+          major: 0,
+          minor: 0,
+          startTime: st,
+          endTime: et
+        }
+      };
+
+      return await this.request('POST', '/ISAPI/AccessControl/AcsEvent', finalData);
+    } catch (e) {
+      console.error("Attendance robust fetch failed", e);
+      throw e;
+    }
   }
 }

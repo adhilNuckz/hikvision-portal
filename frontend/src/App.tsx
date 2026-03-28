@@ -8,14 +8,18 @@ import {
   Search, 
   Activity, 
   Database,
-  CheckCircle2,
-  XCircle,
-  Menu,
   Settings,
   Bell,
-  UserPlus
+  UserPlus,
+  Fingerprint,
+  AlertTriangle,
+  Server,
+  CheckCircle2,
+  XCircle,
+  Menu
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import Webcam from 'react-webcam';
 import api from './api/client';
 
 // Types
@@ -39,6 +43,8 @@ interface User {
 const App = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [users, setUsers] = useState<User[]>([]);
+  const [logs, setLogs] = useState<any[]>([]);
+  const [allEvents, setAllEvents] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [deviceInfo, setDeviceInfo] = useState<DeviceInfo | null>(null);
   const [status, setStatus] = useState<'online' | 'offline' | 'checking'>('checking');
@@ -48,12 +54,24 @@ const App = () => {
   const [newUserName, setNewUserName] = useState('');
   const [newUserNo, setNewUserNo] = useState('');
 
+
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+
+  const [showFaceModal, setShowFaceModal] = useState(false);
+  const [faceTargetNo, setFaceTargetNo] = useState('');
+  const webcamRef = React.useRef<Webcam>(null);
 
   useEffect(() => {
     checkConnection();
     fetchUsers();
+    fetchAttendanceLogs();
+
+    const intervalId = setInterval(() => {
+      fetchAttendanceLogs();
+    }, 3000);
+
+    return () => clearInterval(intervalId);
   }, []);
 
   const checkConnection = async () => {
@@ -95,6 +113,23 @@ const App = () => {
     }
   };
 
+  const fetchAttendanceLogs = async () => {
+    try {
+      const { data } = await api.get('/hik/attendance');
+      const eventList = data?.AcsEvent?.InfoList || [];
+      // Filter ONLY actual user scans (they have employee ID)
+      const userScans = eventList.filter((log: any) => !!log.employeeNoString);
+      
+      const sortedUsers = [...userScans].sort((a: any, b: any) => new Date(b.time).getTime() - new Date(a.time).getTime());
+      const sortedEvents = [...eventList].sort((a: any, b: any) => new Date(b.time).getTime() - new Date(a.time).getTime());
+      
+      setLogs(sortedUsers);
+      setAllEvents(sortedEvents);
+    } catch (err) {
+      console.error('Failed to fetch attendance logs:', err);
+    }
+  };
+
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -113,23 +148,63 @@ const App = () => {
     }
   };
 
+  const handleFaceCapture = async () => {
+    if (!webcamRef.current) return;
+    const imageSrc = webcamRef.current.getScreenshot();
+    if (!imageSrc) {
+      alert("Failed to capture image. Please ensure webcam access.");
+      return;
+    }
+    try {
+      setLoading(true);
+      await api.post('/hik/upload-face', {
+        employeeNo: faceTargetNo,
+        image: imageSrc
+      });
+      alert('Face uploaded successfully to terminal!');
+      setShowFaceModal(false);
+    } catch (err) {
+      alert('Failed to upload face. Error: ' + err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleEditUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser) return;
     try {
+      setLoading(true);
       await api.put('/hik/users', editingUser);
       setShowEditUserModal(false);
       setEditingUser(null);
       fetchUsers();
     } catch (err) {
       alert('Failed to update user');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleDeleteUser = async (id: string) => {
+  const handleAddFingerprint = async (employeeNo: string) => {
+    const url = `https://192.168.137.23/doc/index.html#/peopleManage/addEditPeople?employeeNo=${employeeNo}&pageNumber=1&groupPageNumber=1&viewMode=card&currentGroupId=all&type=edit`;
+    
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch (e) {
+      // ignore clipboard error
+    }
+
+    // Use a named window target. If the tab is already open, it updates the existing tab's routing organically.
+    window.open(url, 'hikvision_portal');
+    
+    alert(`Link copied to clipboard!\n\nHikvision often blocks deep links and redirects you to the Dashboard on your first try.\n\nIF IT REDIRECTS YOU TO THE DASHBOARD:\nSimply return here and click the Fingerprint button ONE MORE TIME, or manually paste the copied link into your new tab's address bar!`);
+  };
+
+  const handleDeleteUser = async (employeeNo: string) => {
     if (!confirm('Are you sure you want to delete this user?')) return;
     try {
-      await api.delete(`/hik/users/${id}`);
+      await api.delete(`/hik/users/${employeeNo}`);
       fetchUsers();
     } catch (err) {
       alert('Failed to delete user');
@@ -154,7 +229,7 @@ const App = () => {
     { label: 'Total Users', value: users.length, icon: Users, color: 'blue' },
     { label: 'Device Status', value: status === 'online' ? 'Online' : 'Offline', icon: Activity, color: status === 'online' ? 'green' : 'red' },
     { label: 'Model', value: deviceInfo?.DeviceInfo?.model || 'Detecting...', icon: ShieldCheck, color: 'purple' },
-    { label: 'Auth Logs', value: '-', icon: Database, color: 'orange' },
+    { label: 'Auth Logs', value: logs.length.toString(), icon: Database, color: 'orange' },
   ];
 
   return (
@@ -173,7 +248,8 @@ const App = () => {
             {[
               { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
               { id: 'users', icon: Users, label: 'User Management' },
-              { id: 'logs', icon: Activity, label: 'Activity Logs' },
+              { id: 'logs', icon: Activity, label: 'Live Attendance' },
+              { id: 'events', icon: Server, label: 'System Events' },
               { id: 'settings', icon: Settings, label: 'Settings' },
             ].map(item => (
               <button
@@ -283,8 +359,32 @@ const App = () => {
                         <button className="text-xs px-3 py-1.5 rounded-lg text-gray-400 hover:bg-gray-800">History</button>
                       </div>
                     </div>
-                    <div className="h-64 flex items-center justify-center text-gray-500 italic">
-                      [ Interactive Graph Illustration ]
+                    <div className="flex-1 overflow-y-auto w-full h-full custom-scrollbar max-h-64">
+                      <table className="w-full text-left">
+                        <tbody className="divide-y divide-gray-800/50">
+                          {logs.length === 0 ? (
+                            <tr><td colSpan={4} className="p-12 text-center text-gray-500 italic">Listening for recent activity...</td></tr>
+                          ) : (
+                            logs.slice(0, 5).map((log, i) => (
+                              <tr key={i} className="hover:bg-white/5 transition-colors">
+                                <td className="px-6 py-4 w-16">
+                                  <div className={`flex flex-col items-center justify-center w-10 h-10 rounded-full ${log.minor === 75 || log.minor === 76 ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
+                                    {log.minor === 75 || log.minor === 76 ? <CheckCircle2 size={18} /> : <XCircle size={18} />}
+                                  </div>
+                                </td>
+                                <td className="px-2 py-4">
+                                  <p className="font-bold text-gray-200">{log.name || 'Unknown User'}</p>
+                                  <p className="font-mono text-gray-500 text-xs">ID: {log.employeeNoString}</p>
+                                </td>
+                                <td className="px-6 py-4 text-gray-400 font-mono text-sm">{new Date(log.time).toLocaleTimeString()}</td>
+                                <td className="px-6 py-4 text-right">
+                                  <span className="bg-gray-800 text-gray-300 text-[10px] px-2.5 py-1 rounded-full capitalize font-bold tracking-wider">{log.currentVerifyMode}</span>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
                   
@@ -305,8 +405,8 @@ const App = () => {
                         <CheckCircle2 size={16} className="text-green-500" />
                         <span>Firmware {deviceInfo?.DeviceInfo?.firmwareVersion}</span>
                       </div>
-                      <button className="mt-6 w-full py-2.5 rounded-xl bg-white text-gray-900 font-bold text-sm tracking-wide">
-                        Check for Updates
+                      <button onClick={checkConnection} className="mt-6 w-full py-2.5 rounded-xl bg-white hover:bg-gray-200 text-gray-900 font-bold text-sm tracking-wide transition-colors">
+                        Ping Device Connection
                       </button>
                     </div>
                   </div>
@@ -375,9 +475,130 @@ const App = () => {
                               </td>
                               <td className="px-6 py-4 text-right">
                                 <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  <button onClick={() => { setEditingUser(user); setShowEditUserModal(true); }} className="p-2 hover:bg-gray-800 rounded-lg text-gray-400"><Settings size={16} /></button>
-                                  <button onClick={() => handleDeleteUser(user.employeeNo)} className="p-2 hover:bg-red-900/20 text-red-500/70 hover:text-red-500 rounded-lg transition-colors"><Trash2 size={16} /></button>
+                                  <button title="Enroll Fingerprint via Device Portal" onClick={() => handleAddFingerprint(user.employeeNo)} className="p-2 hover:bg-green-900/40 text-green-400 hover:text-green-300 rounded-lg transition-colors"><Fingerprint size={16} /></button>
+                                  <button title="Enroll Face via PC Camera" onClick={() => { setFaceTargetNo(user.employeeNo); setShowFaceModal(true); }} className="p-2 hover:bg-blue-900/40 text-blue-400 hover:text-blue-300 rounded-lg transition-colors"><ShieldCheck size={16} /></button>
+                                  <button title="Edit Settings" onClick={() => { setEditingUser(user); setShowEditUserModal(true); }} className="p-2 hover:bg-gray-800 rounded-lg text-gray-400"><Settings size={16} /></button>
+                                  <button title="Delete User" onClick={() => handleDeleteUser(user.employeeNo)} className="p-2 hover:bg-red-900/20 text-red-500/70 hover:text-red-500 rounded-lg transition-colors"><Trash2 size={16} /></button>
                                 </div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === 'logs' && (
+              <motion.div 
+                key="logs"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-6"
+              >
+                <div>
+                  <h2 className="text-2xl font-bold text-green-400 tracking-tight flex items-center gap-3"><Activity size={24} className="animate-pulse" /> Live Remote Attendance</h2>
+                  <p className="text-gray-500">Live feed of all biometric device authentications. Auto-updating constantly.</p>
+                </div>
+
+                <div className="card bg-gray-900/30 border-gray-800/50 p-0 overflow-hidden shadow-2xl">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="bg-gray-800/30 text-gray-400 text-xs font-bold uppercase tracking-wider">
+                          <th className="px-6 py-4">Status</th>
+                          <th className="px-6 py-4">Employee</th>
+                          <th className="px-6 py-4">Timestamp</th>
+                          <th className="px-6 py-4">Authentication</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-800/50">
+                        {logs.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="px-6 py-12 text-center text-gray-500 italic">
+                               No recent activity logs.
+                            </td>
+                          </tr>
+                        ) : (
+                          logs.map((log, i) => (
+                            <tr key={i} className="hover:bg-white/5 transition-colors group">
+                              <td className="px-6 py-4">
+                                <div className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-lg text-sm font-medium ${log.minor === 75 || log.minor === 76 ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
+                                  {log.minor === 75 || log.minor === 76 ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
+                                  {log.minor === 75 || log.minor === 76 ? 'Granted' : 'Denied / Error'}
+                                </div>
+                              </td>
+                              <td className="px-6 py-4">
+                                <p className="font-semibold text-gray-200">{log.name || 'Unknown User'}</p>
+                                <p className="font-mono text-gray-500 text-xs mt-0.5">ID: {log.employeeNoString || '-'}</p>
+                              </td>
+                              <td className="px-6 py-4">
+                                <p className="font-medium text-gray-200">{new Date(log.time).toLocaleTimeString()}</p>
+                                <p className="text-gray-500 text-xs mt-0.5">{new Date(log.time).toLocaleDateString()}</p>
+                              </td>
+                              <td className="px-6 py-4">
+                                <span className="bg-gray-800 text-gray-300 text-xs px-2.5 py-1 rounded-full capitalize border border-gray-700">{log.currentVerifyMode || 'Unknown'}</span>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === 'events' && (
+              <motion.div 
+                key="events"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-6"
+              >
+                <div>
+                  <h2 className="text-2xl font-bold tracking-tight text-blue-400 flex items-center gap-3"><Server size={24} /> Raw System Events</h2>
+                  <p className="text-gray-500">Live, unfiltered view of device operations, alarms, exceptions, and anomalies.</p>
+                </div>
+
+                <div className="card bg-gray-900/30 border-gray-800/50 p-0 overflow-hidden shadow-2xl">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="bg-gray-800/30 text-gray-400 text-xs font-bold uppercase tracking-wider">
+                          <th className="px-6 py-4">Serial No</th>
+                          <th className="px-6 py-4">Event Codes</th>
+                          <th className="px-6 py-4">Timestamp</th>
+                          <th className="px-6 py-4">Description</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-800/50">
+                        {allEvents.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="px-6 py-12 text-center text-gray-500 italic">
+                               No recent events detected.
+                            </td>
+                          </tr>
+                        ) : (
+                          allEvents.map((evt, i) => (
+                            <tr key={i} className="hover:bg-white/5 transition-colors group">
+                              <td className="px-6 py-4 font-mono text-xs text-gray-500">#{evt.serialNo || '-'}</td>
+                              <td className="px-6 py-4 font-mono text-sm">
+                                <span className={`px-2 py-0.5 rounded ${evt.major === 5 ? 'bg-blue-500/20 text-blue-400' : evt.major === 2 || evt.major === 3 ? 'bg-red-500/20 text-red-500' : 'bg-gray-700 text-gray-300'}`}>Major: {evt.major}</span>
+                                <span className="ml-2 text-gray-400">Minor: {evt.minor}</span>
+                              </td>
+                              <td className="px-6 py-4">
+                                <p className="font-medium text-gray-200">{new Date(evt.time).toLocaleTimeString()}</p>
+                                <p className="text-gray-500 text-xs mt-0.5">{new Date(evt.time).toLocaleDateString()}</p>
+                              </td>
+                              <td className="px-6 py-4">
+                                {evt.name ? (
+                                  <span className="flex items-center gap-2"><CheckCircle2 size={16} className="text-green-500" /> Recognized Auth: {evt.name}</span>
+                                ) : (
+                                  <span className="flex items-center gap-2"><AlertTriangle size={16} className="text-yellow-500" /> System Action / Exception</span>
+                                )}
                               </td>
                             </tr>
                           ))
@@ -493,6 +714,48 @@ const App = () => {
                   <button type="submit" className="flex-1 btn btn-primary py-3">Save Changes</button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Capture Face Modal */}
+        {showFaceModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowFaceModal(false)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="card w-full max-w-lg bg-[#0f172a] border-gray-800 shadow-2xl relative z-10"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-bold">Enroll User Face via PC Camera</h3>
+                <button onClick={() => setShowFaceModal(false)} className="text-gray-500 hover:text-white"><XCircle size={22} /></button>
+              </div>
+              <p className="text-sm text-gray-400 mb-6">Align the user's face perfectly within the center frame to capture and automatically assign it to Employee ID <span className="text-white font-mono font-bold bg-gray-800 px-1 rounded">{faceTargetNo}</span>.</p>
+              
+              <div className="rounded-xl overflow-hidden border-2 border-dashed border-gray-700 relative w-full aspect-video bg-black flex items-center justify-center">
+                <Webcam
+                  audio={false}
+                  ref={webcamRef}
+                  screenshotFormat="image/jpeg"
+                  videoConstraints={{ facingMode: "user" }}
+                  className="w-full h-full object-cover"
+                />
+              </div>
+
+              <div className="pt-6 flex gap-3">
+                <button type="button" onClick={() => setShowFaceModal(false)} className="flex-1 btn btn-secondary py-3">Cancel</button>
+                <button type="button" onClick={handleFaceCapture} disabled={loading} className="flex-1 btn btn-primary py-3">
+                  {loading ? 'Uploading...' : 'Scan & Upload Face'}
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
